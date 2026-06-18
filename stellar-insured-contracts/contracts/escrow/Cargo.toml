@@ -12,7 +12,7 @@ categories = ["cryptography::cryptocurrencies"]
 publish = false
 
 [dependencies]
-soroban-sdk = { workspace = true }
+soroban-sdk = "20.0.0"
 
 [lib]
 name = "propchain_escrow"
