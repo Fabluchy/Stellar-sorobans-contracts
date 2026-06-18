@@ -12,6 +12,17 @@ members = [
     "contracts/compliance_registry",
     "contracts/fractional",
 ]
+exclude = [
+    "contracts/lib",
+    "contracts/escrow",
+    "contracts/bridge",
+    "contracts/policy",
+    "contracts/claims",
+    "contracts/risk_pool",
+    "contracts/governance",
+    "contracts/slashing",
+    "tests",
+]
 resolver = "2"
 
 [workspace.package]
