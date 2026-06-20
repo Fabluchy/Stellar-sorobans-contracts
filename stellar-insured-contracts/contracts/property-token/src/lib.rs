@@ -815,17 +815,24 @@ mod property_token {
         #[ink(message)]
         pub fn cancel_ask(&mut self, token_id: TokenId) -> Result<(), Error> {
             let seller = self.env().caller();
-            let _ask = self
+            let ask = self
                 .asks
                 .get((token_id, seller))
                 .ok_or(Error::AskNotFound)?;
             let esc = self.escrowed_shares.get((token_id, seller)).unwrap_or(0);
+            if esc != ask.amount {
+                return Err(Error::InvalidAmount);
+            }
             let bal = self.balances.get((seller, token_id)).unwrap_or(0);
             self.balances
                 .insert((seller, token_id), &(bal.saturating_add(esc)));
             self.escrowed_shares.insert((token_id, seller), &0u128);
             self.asks.remove((token_id, seller));
-            self.env().emit_event(AskCancelled { token_id, seller });
+            self.env().emit_event(AskCancelled {
+                token_id,
+                seller,
+                amount: esc,
+            });
             Ok(())
         }
 

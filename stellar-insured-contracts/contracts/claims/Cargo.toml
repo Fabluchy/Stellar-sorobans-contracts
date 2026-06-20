@@ -8,7 +8,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-soroban-sdk = { workspace = true }
+soroban-sdk = "20.0.0"
 stellar-insured-lib = { path = "../lib" }
 
 [lib]
