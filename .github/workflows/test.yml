@@ -4,15 +4,13 @@ on:
   push:
     branches: [ main, develop, master ]
     paths:
-      - 'stellar-insured-contracts/contracts/lib/**'
-      - 'stellar-insured-contracts/contracts/traits/**'
+      - 'stellar-insured-contracts/contracts/**'
       - 'stellar-insured-contracts/Cargo.toml'
       - 'stellar-insured-contracts/Cargo.lock'
   pull_request:
     branches: [ main, develop, master ]
     paths:
-      - 'stellar-insured-contracts/contracts/lib/**'
-      - 'stellar-insured-contracts/contracts/traits/**'
+      - 'stellar-insured-contracts/contracts/**'
       - 'stellar-insured-contracts/Cargo.toml'
       - 'stellar-insured-contracts/Cargo.lock'
   workflow_dispatch:
@@ -21,8 +19,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: PropertyRegistry Unit Tests
+  property-token-tests:
+    name: PropertyToken Unit Tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -44,6 +42,57 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run PropertyRegistry unit tests
-        working-directory: stellar-insured-contracts/contracts/lib
-        run: cargo test --lib
+      - name: Run PropertyToken unit tests
+        run: cargo test --package property-token --lib
+
+  workspace-tests:
+    name: Workspace Unit Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stellar-insured-contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            stellar-insured-contracts/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('stellar-insured-contracts/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  insurance-tests:
+    name: Insurance Security Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stellar-insured-contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            stellar-insured-contracts/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('stellar-insured-contracts/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run insurance tests
+        run: cargo test --package propchain-insurance --lib
