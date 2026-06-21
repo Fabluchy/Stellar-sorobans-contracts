@@ -109,6 +109,15 @@ mod property_token {
     include!("types.rs");
 
     impl PropertyToken {
+        fn compute_hash<T: scale::Encode>(&self, data: &T) -> Hash {
+            use ink::env::hash::{HashOutput, Sha2x256};
+
+            let encoded = data.encode();
+            let mut output = <Sha2x256 as HashOutput>::Type::default();
+            ink::env::hash_bytes::<Sha2x256>(&encoded, &mut output);
+            Hash::from(output)
+        }
+
         /// Creates a new PropertyToken contract
         #[ink(constructor)]
         pub fn new() -> Self {
@@ -1016,15 +1025,7 @@ mod property_token {
                 from: AccountId::from([0u8; 32]), // Zero address for minting
                 to: caller,
                 timestamp: self.env().block_timestamp(),
-                transaction_hash: {
-                    use scale::Encode;
-                    let data = (&caller, token_id);
-                    let encoded = data.encode();
-                    let mut hash_bytes = [0u8; 32];
-                    let len = encoded.len().min(32);
-                    hash_bytes[..len].copy_from_slice(&encoded[..len]);
-                    Hash::from(hash_bytes)
-                },
+                transaction_hash: self.compute_hash(&(&caller, token_id)),
             };
 
             self.ownership_history_count.insert(token_id, &1u32);
@@ -1503,15 +1504,7 @@ mod property_token {
                 from: AccountId::from([0u8; 32]), // Zero address for minting
                 to: recipient,
                 timestamp: self.env().block_timestamp(),
-                transaction_hash: {
-                    use scale::Encode;
-                    let data = (&recipient, new_token_id);
-                    let encoded = data.encode();
-                    let mut hash_bytes = [0u8; 32];
-                    let len = encoded.len().min(32);
-                    hash_bytes[..len].copy_from_slice(&encoded[..len]);
-                    Hash::from(hash_bytes)
-                },
+                transaction_hash: self.compute_hash(&(&recipient, new_token_id)),
             };
 
             self.ownership_history_count.insert(new_token_id, &1u32);
@@ -1886,15 +1879,7 @@ mod property_token {
                 from,
                 to,
                 timestamp: self.env().block_timestamp(),
-                transaction_hash: {
-                    use scale::Encode;
-                    let data = (&from, &to, token_id);
-                    let encoded = data.encode();
-                    let mut hash_bytes = [0u8; 32];
-                    let len = encoded.len().min(32);
-                    hash_bytes[..len].copy_from_slice(&encoded[..len]);
-                    Hash::from(hash_bytes)
-                },
+                transaction_hash: self.compute_hash(&(&from, &to, token_id)),
             };
 
             self.ownership_history_items
@@ -1925,7 +1910,6 @@ mod property_token {
 
         /// Helper to generate bridge transaction hash
         fn generate_bridge_transaction_hash(&self, request: &MultisigBridgeRequest) -> Hash {
-            use scale::Encode;
             let data = (
                 request.request_id,
                 request.token_id,
@@ -1935,12 +1919,7 @@ mod property_token {
                 request.recipient,
                 self.env().block_timestamp(),
             );
-            let encoded = data.encode();
-            // Simple hash: use first 32 bytes of encoded data
-            let mut hash_bytes = [0u8; 32];
-            let len = encoded.len().min(32);
-            hash_bytes[..len].copy_from_slice(&encoded[..len]);
-            Hash::from(hash_bytes)
+            self.compute_hash(&data)
         }
 
         /// Helper to estimate bridge gas usage
