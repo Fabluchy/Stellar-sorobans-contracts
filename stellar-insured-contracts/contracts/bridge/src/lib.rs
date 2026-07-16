@@ -1,5 +1,7 @@
 #![no_std]
 
+mod migration;
+mod migration_framework;
 mod storage;
 mod types;
 mod validation;
@@ -89,7 +91,7 @@ impl PropertyBridge {
             let chain_info = ChainBridgeInfo {
                 chain_id,
                 chain_name: String::from_str(&env, "Chain"),
-                bridge_contract_address: None,
+                bridge_contract_address: String::from_str(&env, ""),
                 is_active: true,
                 gas_multiplier: 100,
                 confirmation_blocks: 6,
@@ -137,11 +139,6 @@ impl PropertyBridge {
         let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
             .unwrap_or_else(|| panic!("Contract not initialized"));
 
-        if config.service_fee > 0 {
-            use soroban_sdk::token;
-            let client = token::Client::new(&env, &config.fee_token);
-            client.transfer(&caller, &config.fee_recipient, &config.service_fee);
-        }
         require_not_paused(&env);
         require_supported_chain(&config, destination_chain);
         require_valid_signatures(&config, required_signatures);
@@ -153,6 +150,15 @@ impl PropertyBridge {
             .unwrap_or(0);
         counter += 1;
         env.storage().instance().set(&DataKey::ReqCounter, &counter);
+
+        if config.service_fee > 0 {
+            use soroban_sdk::token;
+            let client = token::Client::new(&env, &config.fee_token);
+            client.transfer(&caller, &env.current_contract_address(), &config.service_fee);
+            env.storage()
+                .persistent()
+                .set(&DataKey::FeeEscrow(counter), &config.service_fee);
+        }
 
         let now = env.ledger().timestamp();
         let expires_at = timeout_seconds.map(|s| now + s);
@@ -170,6 +176,7 @@ impl PropertyBridge {
             recipient,
             required_signatures,
             signatures: Vec::new(&env),
+            rejections: Vec::new(&env),
             created_at: now,
             expires_at,
             status: BridgeOperationStatus::Pending,
@@ -201,22 +208,30 @@ impl PropertyBridge {
             .get(&DataKey::Request(request_id))
             .expect("Request not found");
 
+        if request.status != BridgeOperationStatus::Pending {
+            panic!("Request not pending");
+        }
+
         if let Some(expires_at) = request.expires_at {
             if env.ledger().timestamp() > expires_at {
                 panic!("Request expired");
             }
         }
 
-        if request.signatures.contains(operator.clone()) {
+        if request.signatures.contains(operator.clone()) || request.rejections.contains(operator.clone()) {
             panic!("Already signed");
         }
 
-        request.signatures.push_back(operator.clone());
-
-        if !approve {
-            request.status = BridgeOperationStatus::Failed;
-        } else if request.signatures.len() >= request.required_signatures {
-            request.status = BridgeOperationStatus::Locked;
+        if approve {
+            request.signatures.push_back(operator.clone());
+            if request.signatures.len() >= request.required_signatures {
+                request.status = BridgeOperationStatus::Locked;
+            }
+        } else {
+            request.rejections.push_back(operator.clone());
+            if request.rejections.len() >= request.required_signatures {
+                request.status = BridgeOperationStatus::Failed;
+            }
         }
 
         env.storage()
@@ -278,6 +293,18 @@ impl PropertyBridge {
         env.storage()
             .persistent()
             .set(&DataKey::Request(request_id), &request);
+
+        if let Some(fee) = env.storage().persistent().get::<_, i128>(&DataKey::FeeEscrow(request_id)) {
+            if fee > 0 {
+                let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
+                    .unwrap_or_else(|| panic!("Contract not initialized"));
+                use soroban_sdk::token;
+                let client = token::Client::new(&env, &config.fee_token);
+                client.transfer(&env.current_contract_address(), &config.fee_recipient, &fee);
+            }
+            env.storage().persistent().remove(&DataKey::FeeEscrow(request_id));
+        }
+
         env.storage()
             .persistent()
             .set(&DataKey::VerifiedTx(tx_hash.clone()), &true);
@@ -327,10 +354,22 @@ impl PropertyBridge {
             panic!("Request not in failed state");
         }
 
+        if let Some(fee) = env.storage().persistent().get::<_, i128>(&DataKey::FeeEscrow(request_id)) {
+            if fee > 0 {
+                let config: BridgeConfig = env.storage().instance().get(&DataKey::Config)
+                    .unwrap_or_else(|| panic!("Contract not initialized"));
+                use soroban_sdk::token;
+                let client = token::Client::new(&env, &config.fee_token);
+                client.transfer(&env.current_contract_address(), &request.sender, &fee);
+            }
+            env.storage().persistent().remove(&DataKey::FeeEscrow(request_id));
+        }
+
         match recovery_action {
             RecoveryAction::RetryBridge => {
                 request.status = BridgeOperationStatus::Pending;
                 request.signatures = Vec::new(&env);
+                request.rejections = Vec::new(&env);
             }
             RecoveryAction::CancelBridge
             | RecoveryAction::UnlockToken

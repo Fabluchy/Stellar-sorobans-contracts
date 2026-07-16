@@ -47,6 +47,7 @@ pub struct MultisigBridgeRequest {
     pub recipient: Address,
     pub required_signatures: u32,
     pub signatures: Vec<Address>,
+    pub rejections: Vec<Address>,
     pub created_at: u64,
     pub expires_at: Option<u64>,
     pub status: BridgeOperationStatus,
@@ -74,7 +75,7 @@ pub struct BridgeTransaction {
 pub struct ChainBridgeInfo {
     pub chain_id: u32,
     pub chain_name: String,
-    pub bridge_contract_address: Option<String>,
+    pub bridge_contract_address: String,
     pub is_active: bool,
     pub gas_multiplier: u32,
     pub confirmation_blocks: u32,

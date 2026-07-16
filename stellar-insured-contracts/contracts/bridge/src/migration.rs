@@ -8,8 +8,9 @@ use crate::types::{
     BridgeConfig, BridgeOperationStatus, BridgeTransaction, ChainBridgeInfo,
     MultisigBridgeRequest, PropertyMetadata, RecoveryAction,
 };
-use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
-use stellar_insured_contracts::contracts::lib::migration::{
+use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec, vec};
+use soroban_sdk::xdr::ToXdr;
+use crate::migration_framework::{
     MigrationFramework, MigrationKey, MigrationOperation, MigrationStep, MigrationError,
     DefaultMigrationFramework,
 };
@@ -47,7 +48,7 @@ impl BridgeMigrationManager {
 
     /// Execute bridge-specific migration to version 2
     pub fn migrate_to_v2(&self, env: &Env) -> Result<u64, MigrationError> {
-        let steps = vec![
+        let steps = vec![env,
             MigrationStep {
                 step_id: 1,
                 operation: MigrationOperation::AddField,
@@ -82,7 +83,7 @@ impl BridgeMigrationManager {
 
     /// Execute bridge-specific migration to version 3
     pub fn migrate_to_v3(&self, env: &Env) -> Result<u64, MigrationError> {
-        let steps = vec![
+        let steps = vec![env,
             MigrationStep {
                 step_id: 1,
                 operation: MigrationOperation::AddField,
@@ -159,7 +160,7 @@ impl BridgeMigrationManager {
             let mut chain_info: ChainBridgeInfo = env
                 .storage()
                 .persistent()
-                .get(&DataKey::ChainInfo(*chain_id))
+                .get(&DataKey::ChainInfo(chain_id))
                 .ok_or(MigrationError::StorageCorruption)?;
 
             // Add supported_tokens field with empty vector
@@ -167,7 +168,7 @@ impl BridgeMigrationManager {
 
             env.storage()
                 .persistent()
-                .set(&DataKey::ChainInfo(*chain_id), &chain_info);
+                .set(&DataKey::ChainInfo(chain_id), &chain_info);
         }
 
         Ok(())
@@ -185,7 +186,7 @@ impl BridgeMigrationManager {
             let mut chain_info: ChainBridgeInfo = env
                 .storage()
                 .persistent()
-                .get(&DataKey::ChainInfo(*chain_id))
+                .get(&DataKey::ChainInfo(chain_id))
                 .ok_or(MigrationError::StorageCorruption)?;
 
             // Add gas_multiplier with default value
@@ -193,7 +194,7 @@ impl BridgeMigrationManager {
 
             env.storage()
                 .persistent()
-                .set(&DataKey::ChainInfo(*chain_id), &chain_info);
+                .set(&DataKey::ChainInfo(chain_id), &chain_info);
         }
 
         Ok(())
@@ -211,7 +212,7 @@ impl BridgeMigrationManager {
             let mut chain_info: ChainBridgeInfo = env
                 .storage()
                 .persistent()
-                .get(&DataKey::ChainInfo(*chain_id))
+                .get(&DataKey::ChainInfo(chain_id))
                 .ok_or(MigrationError::StorageCorruption)?;
 
             // Add confirmation_blocks with default value
@@ -219,7 +220,7 @@ impl BridgeMigrationManager {
 
             env.storage()
                 .persistent()
-                .set(&DataKey::ChainInfo(*chain_id), &chain_info);
+                .set(&DataKey::ChainInfo(chain_id), &chain_info);
         }
 
         Ok(())
@@ -253,10 +254,10 @@ impl BridgeMigrationManager {
             let chain_info: ChainBridgeInfo = env
                 .storage()
                 .persistent()
-                .get(&DataKey::ChainInfo(*chain_id))
+                .get(&DataKey::ChainInfo(chain_id))
                 .ok_or(MigrationError::StorageCorruption)?;
 
-            if chain_info.chain_id != *chain_id {
+            if chain_info.chain_id != chain_id {
                 return Err(MigrationError::StorageCorruption);
             }
         }
@@ -281,7 +282,7 @@ impl BridgeMigrationManager {
 
         // Create checksum of backed up data
         let data = (config, admin);
-        let checksum = env.crypto().sha256(&data.try_into().unwrap_or_default());
+        let checksum = env.crypto().sha256(&data.to_xdr(env));
 
         // Store backup checksum
         env.storage()
@@ -347,7 +348,287 @@ impl MigrationFramework for BridgeMigrationManager {
         self.framework.get_version(env)
     }
 
-    fn validate_migration(&self, env: &Env, steps: &[MigrationStep]) -> Result<(), MigrationError> {
+    fn validate_migration(&self, env: &Env, steps: Vec<MigrationStep>) -> Result<(), MigrationError> {
         self.framework.validate_migration(env, steps)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, token};
+
+    struct TestContext<'a> {
+        env: Env,
+        admin: Address,
+        operators: Vec<Address>,
+        fee_token: token::Client<'a>,
+        fee_admin_client: token::StellarAssetClient<'a>,
+        fee_recipient: Address,
+        bridge_client: crate::PropertyBridgeClient<'a>,
+        user: Address,
+    }
+
+    fn setup_test<'a>() -> TestContext<'a> {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let operator2 = Address::generate(&env);
+        let operator3 = Address::generate(&env);
+        let fee_recipient = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_address = env.register_stellar_asset_contract(token_admin.clone());
+        let fee_token = token::Client::new(&env, &token_address);
+        let fee_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        // Deploy bridge contract
+        let bridge_id = env.register_contract(None, crate::PropertyBridge);
+        let bridge_client = crate::PropertyBridgeClient::new(&env, &bridge_id);
+
+        // Initialize bridge
+        let mut supported_chains = Vec::new(&env);
+        supported_chains.push_back(2); // Chain 2
+        
+        bridge_client.init(
+            &admin,
+            &supported_chains,
+            &2, // min signatures
+            &3, // max signatures
+            &3600, // default timeout
+            &100000, // gas limit
+            &100, // service fee
+            &token_address,
+            &fee_recipient,
+        );
+
+        // Add extra operators (admin is already added as operator in init)
+        bridge_client.add_operator(&admin, &operator2);
+        bridge_client.add_operator(&admin, &operator3);
+
+        let mut operators = Vec::new(&env);
+        operators.push_back(admin.clone());
+        operators.push_back(operator2.clone());
+        operators.push_back(operator3.clone());
+
+        // Mint tokens to user for service fee
+        fee_admin_client.mint(&user, &1000);
+
+        TestContext {
+            env,
+            admin,
+            operators,
+            fee_token,
+            fee_admin_client,
+            fee_recipient,
+            bridge_client,
+            user,
+        }
+    }
+
+    #[test]
+    fn test_rogue_operator_veto_success() {
+        let ctx = setup_test();
+        let metadata = PropertyMetadata {
+            location: String::from_str(&ctx.env, "USA"),
+            size: 1500,
+            legal_description: String::from_str(&ctx.env, "Lot 4"),
+            valuation: 500_000,
+            documents_url: String::from_str(&ctx.env, "http://docs.com"),
+        };
+
+        // User initiates bridge request
+        let request_id = ctx.bridge_client.initiate_bridge_multisig(
+            &ctx.user,
+            &1, // token_id
+            &2, // destination_chain
+            &ctx.user, // recipient
+            &2, // required_signatures
+            &Some(3600), // timeout_seconds
+            &metadata,
+            &1, // nonce
+        );
+
+        // Verify request created and status is Pending
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        assert_eq!(request.status, BridgeOperationStatus::Pending);
+
+        // Operator 1 (admin) approves
+        ctx.bridge_client.sign_bridge_request(&ctx.admin, &request_id, &true);
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        assert_eq!(request.status, BridgeOperationStatus::Pending);
+
+        // Operator 2 (rogue/veto) rejects
+        ctx.bridge_client.sign_bridge_request(&ctx.operators.get(1).unwrap(), &request_id, &false);
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        // It should still be Pending because threshold for failure (2 rejections) is not met!
+        assert_eq!(request.status, BridgeOperationStatus::Pending);
+
+        // Operator 3 approves (reaching required_signatures = 2 approvals)
+        ctx.bridge_client.sign_bridge_request(&ctx.operators.get(2).unwrap(), &request_id, &true);
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        // It should now be Locked (quorum achieved)!
+        assert_eq!(request.status, BridgeOperationStatus::Locked);
+    }
+
+    #[test]
+    fn test_failed_by_rejections() {
+        let ctx = setup_test();
+        let metadata = PropertyMetadata {
+            location: String::from_str(&ctx.env, "USA"),
+            size: 1500,
+            legal_description: String::from_str(&ctx.env, "Lot 4"),
+            valuation: 500_000,
+            documents_url: String::from_str(&ctx.env, "http://docs.com"),
+        };
+
+        // User initiates bridge request
+        let request_id = ctx.bridge_client.initiate_bridge_multisig(
+            &ctx.user,
+            &1, // token_id
+            &2, // destination_chain
+            &ctx.user, // recipient
+            &2, // required_signatures
+            &Some(3600), // timeout_seconds
+            &metadata,
+            &1, // nonce
+        );
+
+        // Operator 1 rejects
+        ctx.bridge_client.sign_bridge_request(&ctx.admin, &request_id, &false);
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        assert_eq!(request.status, BridgeOperationStatus::Pending);
+
+        // Operator 2 rejects (rejections.len() = 2 >= required_signatures)
+        ctx.bridge_client.sign_bridge_request(&ctx.operators.get(1).unwrap(), &request_id, &false);
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        // It should be Failed now
+        assert_eq!(request.status, BridgeOperationStatus::Failed);
+    }
+
+    #[test]
+    fn test_service_fee_escrow_and_refund() {
+        let ctx = setup_test();
+        let metadata = PropertyMetadata {
+            location: String::from_str(&ctx.env, "USA"),
+            size: 1500,
+            legal_description: String::from_str(&ctx.env, "Lot 4"),
+            valuation: 500_000,
+            documents_url: String::from_str(&ctx.env, "http://docs.com"),
+        };
+
+        let initial_user_balance = ctx.fee_token.balance(&ctx.user);
+
+        // User initiates bridge request (charges 100 service fee)
+        let request_id = ctx.bridge_client.initiate_bridge_multisig(
+            &ctx.user,
+            &1, // token_id
+            &2, // destination_chain
+            &ctx.user, // recipient
+            &2, // required_signatures
+            &Some(3600), // timeout_seconds
+            &metadata,
+            &1, // nonce
+        );
+
+        // Check fee escrowed
+        assert_eq!(ctx.fee_token.balance(&ctx.user), initial_user_balance - 100);
+        assert_eq!(ctx.fee_token.balance(&ctx.bridge_client.address), 100);
+
+        // Case A: Fails by rejections, then recovered with CancelBridge -> refunds fee
+        ctx.bridge_client.sign_bridge_request(&ctx.admin, &request_id, &false);
+        ctx.bridge_client.sign_bridge_request(&ctx.operators.get(1).unwrap(), &request_id, &false);
+        
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        assert_eq!(request.status, BridgeOperationStatus::Failed);
+
+        // Admin recovers the failed bridge
+        ctx.bridge_client.recover_failed_bridge(&ctx.admin, &request_id, &RecoveryAction::CancelBridge);
+
+        // User balance should be restored to initial
+        assert_eq!(ctx.fee_token.balance(&ctx.user), initial_user_balance);
+        assert_eq!(ctx.fee_token.balance(&ctx.bridge_client.address), 0);
+    }
+
+    #[test]
+    fn test_service_fee_refund_on_retry() {
+        let ctx = setup_test();
+        let metadata = PropertyMetadata {
+            location: String::from_str(&ctx.env, "USA"),
+            size: 1500,
+            legal_description: String::from_str(&ctx.env, "Lot 4"),
+            valuation: 500_000,
+            documents_url: String::from_str(&ctx.env, "http://docs.com"),
+        };
+
+        let initial_user_balance = ctx.fee_token.balance(&ctx.user);
+
+        // User initiates bridge request (charges 100 service fee)
+        let request_id = ctx.bridge_client.initiate_bridge_multisig(
+            &ctx.user,
+            &1, // token_id
+            &2, // destination_chain
+            &ctx.user, // recipient
+            &2, // required_signatures
+            &Some(3600), // timeout_seconds
+            &metadata,
+            &1, // nonce
+        );
+
+        // Operator 1 and 2 reject it
+        ctx.bridge_client.sign_bridge_request(&ctx.admin, &request_id, &false);
+        ctx.bridge_client.sign_bridge_request(&ctx.operators.get(1).unwrap(), &request_id, &false);
+
+        // Admin recovers it with RetryBridge -> refunds fee
+        ctx.bridge_client.recover_failed_bridge(&ctx.admin, &request_id, &RecoveryAction::RetryBridge);
+
+        // Fee should be refunded
+        assert_eq!(ctx.fee_token.balance(&ctx.user), initial_user_balance);
+        
+        // Request status should be Pending and signatures/rejections cleared
+        let request = ctx.bridge_client.get_request(&request_id).unwrap();
+        assert_eq!(request.status, BridgeOperationStatus::Pending);
+        assert_eq!(request.signatures.len(), 0);
+        assert_eq!(request.rejections.len(), 0);
+    }
+
+    #[test]
+    fn test_service_fee_released_on_execution() {
+        let ctx = setup_test();
+        let metadata = PropertyMetadata {
+            location: String::from_str(&ctx.env, "USA"),
+            size: 1500,
+            legal_description: String::from_str(&ctx.env, "Lot 4"),
+            valuation: 500_000,
+            documents_url: String::from_str(&ctx.env, "http://docs.com"),
+        };
+
+        let initial_user_balance = ctx.fee_token.balance(&ctx.user);
+
+        // User initiates bridge request
+        let request_id = ctx.bridge_client.initiate_bridge_multisig(
+            &ctx.user,
+            &1, // token_id
+            &2, // destination_chain
+            &ctx.user, // recipient
+            &2, // required_signatures
+            &Some(3600), // timeout_seconds
+            &metadata,
+            &1, // nonce
+        );
+
+        // Operators approve it
+        ctx.bridge_client.sign_bridge_request(&ctx.admin, &request_id, &true);
+        ctx.bridge_client.sign_bridge_request(&ctx.operators.get(1).unwrap(), &request_id, &true);
+
+        // Execute bridge -> transfers escrowed fee to fee_recipient
+        ctx.bridge_client.execute_bridge(&ctx.admin, &request_id);
+
+        // Check balances
+        assert_eq!(ctx.fee_token.balance(&ctx.user), initial_user_balance - 100);
+        assert_eq!(ctx.fee_token.balance(&ctx.fee_recipient), 100);
+        assert_eq!(ctx.fee_token.balance(&ctx.bridge_client.address), 0);
     }
 }
