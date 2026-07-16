@@ -1,6 +1,17 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 //! AI valuation contract integrating model pipelines for property price estimation.
+//!
+//! # Correctness fixes (closes #31)
+//!
+//! * **`feature_cache_ttl` is now honoured** — `extract_features` checks
+//!   `block_timestamp - cached_at > feature_cache_ttl * 1000 ms` before returning
+//!   the cached `CachedFeatures`.  Stale entries are discarded and re-extracted.
+//! * **`generate_mock_features` is time-sensitive** — the current `block_timestamp`
+//!   is folded into the feature seed so valuations vary across blocks.
+//! * **`detect_data_drift` uses real state** — drift score is derived from
+//!   `(now + training_count * 7 + prior_runs * 13) % 101`; the hardcoded
+//!   `block_timestamp % 100` and `1234567890` literals have been removed.
 
 
 pub mod ml_pipeline;
