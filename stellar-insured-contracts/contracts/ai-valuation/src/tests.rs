@@ -338,13 +338,17 @@ mod tests {
     #[ink::test]
     fn test_data_drift_detection() {
         let mut engine = setup_ai_engine();
-        
+
+        // Set a non-zero block timestamp so that drift_result.timestamp > 0
+        // (the timestamp now reflects the real block clock, not a hardcoded placeholder).
+        ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(1_000_000);
+
         let drift_result = engine.detect_data_drift(
             "test_model".to_string(),
             DriftDetectionMethod::KolmogorovSmirnov
         ).unwrap();
-        
-        assert!(drift_result.drift_score <= 10000);
+
+        assert!(drift_result.drift_score <= 100);
         assert!(!drift_result.affected_features.is_empty());
         assert!(drift_result.timestamp > 0);
     }
@@ -412,5 +416,118 @@ mod tests {
         
         // For now, just verify the model was registered
         assert!(engine.get_model("test_model".to_string()).is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Acceptance criteria tests (issue #31)
+    // -----------------------------------------------------------------------
+
+    /// Two properties with different IDs must produce different valuations.
+    #[ink::test]
+    fn test_different_inputs_yield_different_valuations() {
+        let mut engine = setup_ai_engine();
+        let model = create_sample_model();
+        assert!(engine.register_model(model).is_ok());
+
+        // Use two clearly distinct property IDs.
+        let prediction_a = engine.predict_valuation(100, "test_model".to_string()).unwrap();
+        let prediction_b = engine.predict_valuation(999, "test_model".to_string()).unwrap();
+
+        assert_ne!(
+            prediction_a.predicted_value,
+            prediction_b.predicted_value,
+            "Two different property IDs must produce different predicted values"
+        );
+    }
+
+    /// Cached features expire after `feature_cache_ttl` seconds.
+    ///
+    /// This test advances the mock block clock past the TTL and checks that
+    /// `extract_features` re-extracts (producing potentially different features
+    /// because the new timestamp is folded into the seed).
+    #[ink::test]
+    fn test_cached_features_expire_after_ttl() {
+        let mut engine = setup_ai_engine();
+        let property_id: u64 = 42;
+
+        // --- First extraction at t = 0 ms ----------------------------------
+        ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(0);
+        let features_first = engine.extract_features(property_id).unwrap();
+
+        // Immediately re-requesting within TTL should return the cached copy.
+        let features_cached = engine.extract_features(property_id).unwrap();
+        assert_eq!(
+            features_first, features_cached,
+            "Within TTL the cache should be returned unchanged"
+        );
+
+        // --- Advance clock past the TTL (default 3600 s = 3_600_000 ms) ---
+        // Use 3_601_000 ms (one second beyond the default TTL).
+        ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(3_601_000);
+
+        // The cache is now stale; extract_features must re-extract and return
+        // features derived from the new timestamp.
+        let features_fresh = engine.extract_features(property_id).unwrap();
+
+        // With block_timestamp baked into the seed the refreshed features
+        // should differ from the t=0 features.
+        assert_ne!(
+            features_first, features_fresh,
+            "After TTL expiry extract_features must re-extract and return fresh features"
+        );
+    }
+
+    /// `detect_data_drift` must use real state-derived values: the drift score
+    /// must change when training data is added (altering `training_count`) and
+    /// the result timestamp must equal the current block timestamp, not a
+    /// hardcoded placeholder.
+    #[ink::test]
+    fn test_drift_score_is_state_derived() {
+        let mut engine = setup_ai_engine();
+        let model_id = "model_x".to_string();
+
+        // Set a known block timestamp so we can assert against it.
+        let known_ts: u64 = 5_000_000;
+        ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(known_ts);
+
+        // First drift run — no training data yet.
+        let result_a = engine
+            .detect_data_drift(model_id.clone(), DriftDetectionMethod::KolmogorovSmirnov)
+            .unwrap();
+
+        // Timestamp in the result must reflect the real block timestamp.
+        assert_eq!(
+            result_a.timestamp, known_ts,
+            "drift result timestamp must equal the real block timestamp, not 1234567890"
+        );
+
+        // Add training data to change the contract state.
+        let features = create_sample_features();
+        let tp = TrainingDataPoint {
+            property_id: 1,
+            features,
+            actual_value: 700_000,
+            timestamp: known_ts,
+            data_source: "test".to_string(),
+        };
+        assert!(engine.add_training_data(tp).is_ok());
+
+        // Advance the clock to differentiate the second run.
+        ink::env::test::set_block_timestamp::<ink::env::DefaultEnvironment>(known_ts + 1_000);
+
+        // Second drift run — training data count changed AND prior_runs changed.
+        let result_b = engine
+            .detect_data_drift(model_id.clone(), DriftDetectionMethod::KolmogorovSmirnov)
+            .unwrap();
+
+        // The drift score is derived from (block_timestamp + training_count * 7 + prior_runs * 13) % 101.
+        // With different inputs the score must differ.
+        assert_ne!(
+            result_a.drift_score, result_b.drift_score,
+            "drift score must change when contract state (training data / prior runs) changes"
+        );
+
+        // The second result's timestamp must also be the new block timestamp.
+        assert_eq!(result_b.timestamp, known_ts + 1_000);
     }
 }

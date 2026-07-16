@@ -4,14 +4,13 @@ version = "0.1.0"
 authors = ["PropChain Team"]
 edition = "2021"
 
+# Standalone package — not part of the parent workspace.
+[workspace]
+
 [dependencies]
 ink = { version = "5.0.0", default-features = false }
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2.6", default-features = false, features = ["derive"], optional = true }
-
-# PropChain dependencies
-propchain-traits = { path = "../traits", default-features = false }
-propchain-contracts = { path = "../lib", default-features = false }
 
 [lib]
 name = "ai_valuation"
@@ -23,7 +22,5 @@ std = [
     "ink/std",
     "scale/std",
     "scale-info/std",
-    "propchain-traits/std",
-    "propchain-contracts/std",
 ]
 ink-as-dependency = []
