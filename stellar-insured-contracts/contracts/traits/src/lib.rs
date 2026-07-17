@@ -23,6 +23,7 @@ pub enum OracleError {
     RequestPending,
     NotEnoughConfirmations,
     MigrationRequired,
+    StaleValuation,
 }
 
 /// Trait definitions for PropChain contracts
