@@ -259,6 +259,10 @@ mod propchain_oracle {
                 }
             }
 
+            if self.env().block_timestamp().saturating_sub(valuation.last_updated) > self.max_price_staleness {
+                return Err(OracleError::StaleValuation);
+            }
+
             Ok(valuation)
         }
 
@@ -1250,7 +1254,6 @@ mod oracle_tests {
             Err(OracleError::Unauthorized)
         );
     }
-
     #[ink::test]
     fn test_update_property_valuation_works() {
         let mut oracle = setup_oracle();
@@ -1262,6 +1265,7 @@ mod oracle_tests {
             sources_used: 3,
             last_updated: ink::env::block_timestamp::<DefaultEnvironment>(),
             valuation_method: ValuationMethod::MarketData,
+            confirmed_at_block: None,
         };
 
         assert!(oracle
@@ -1274,6 +1278,35 @@ mod oracle_tests {
             retrieved.expect("Valuation should exist after update"),
             valuation
         );
+    }
+
+    #[ink::test]
+    fn test_get_property_valuation_staleness_guard() {
+        let mut oracle = setup_oracle();
+        
+        let initial_time = 10000;
+        ink::env::test::set_block_timestamp::<DefaultEnvironment>(initial_time);
+        
+        let valuation = PropertyValuation {
+            property_id: 1,
+            valuation: 500000,
+            confidence_score: 85,
+            sources_used: 3,
+            last_updated: initial_time,
+            valuation_method: ValuationMethod::MarketData,
+            confirmed_at_block: None,
+        };
+        
+        assert!(oracle.update_property_valuation(1, valuation.clone()).is_ok());
+        assert!(oracle.get_property_valuation(1).is_ok());
+        
+        // Advance time to exactly staleness threshold
+        ink::env::test::set_block_timestamp::<DefaultEnvironment>(initial_time + oracle.max_price_staleness);
+        assert!(oracle.get_property_valuation(1).is_ok());
+
+        // Advance time past the staleness threshold
+        ink::env::test::set_block_timestamp::<DefaultEnvironment>(initial_time + oracle.max_price_staleness + 1);
+        assert_eq!(oracle.get_property_valuation(1), Err(OracleError::StaleValuation));
     }
 
     #[ink::test]
